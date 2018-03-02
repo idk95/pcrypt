@@ -1,0 +1,174 @@
+#!/usr/bin/env python2.7
+# -*- coding: utf-8 -*-
+from multiprocessing import Process, Semaphore, Queue, Value
+from Crypto.Cipher import AES
+from sys import *
+import os, random, argparse, time
+
+q = Queue()
+sem = Semaphore(1)
+process = []
+files = []
+n = Value('i',0)
+total = 0
+eCypher = False
+dCypher = False
+
+def filesStdin():
+    files = stdin.readlines()
+    for i in range(len(files)):
+        files[i] = files[i].rstrip()
+    return files
+
+def createP(argvs, tipo, proc = 1, v = False):
+    total = argvs
+    for f in argvs:
+        if os.path.isfile(f) == False:
+            print 'The file', f, "doesn't exist."
+            if v:
+                break
+        else:
+            q.put(f)
+    for i in range(int(proc)):
+        newP = Process(target = tipo)
+        process.append(newP)
+        newP.start()
+
+def key(filename):
+    with open(filename) as ifile, open(filename + ".key", "w") as ofile:
+        ofile.write("%032x" % random.SystemRandom().getrandbits(126))
+
+def pad(bytestring):
+    nbytes = len(bytestring)
+    padding_bytes = AES.block_size - nbytes
+    padding_str = padding_bytes * chr(padding_bytes)
+    return bytestring + padding_str
+
+def cifrar():
+    go = True
+    while go:
+        try:
+            if q.empty() == True:
+                go = False
+            else:
+                sem.acquire()
+                filename=q.get()
+                n.value+=1
+                sem.release()
+                key(filename)
+                chave = ''
+                with open(filename+'.key') as f:
+                    chave = f.read(32)
+                cipher = AES.new(chave)
+                with open(filename) as ifile, open(filename + ".enc", "w") as ofile:
+                    bytestring = ifile.read(AES.block_size)
+                    while len(bytestring) == AES.block_size:
+                        ofile.write(cipher.encrypt(pad(bytestring)))
+                        bytestring = ifile.read(AES.block_size)
+                    ofile.write(cipher.encrypt(pad(bytestring)))
+        except:
+            break
+
+def decifrar():
+    go = True
+    while go:
+        try:
+            if q.empty() == True:
+                go = False
+            else:
+                sem.acquire()
+                filename=q.get()
+                n.value+=1
+                sem.release()
+                chave = ''
+                with open(filename+'.key') as f:
+                    chave = f.readlines()[0]
+                cipher = AES.new(chave)
+                with open(filename + ".enc") as ifile, open(filename + ".dec", "w") as ofile:
+                    previous = None
+                    current = None
+                    NOT_DONE = True
+                    while NOT_DONE:
+                        bytestring = cipher.decrypt(ifile.read(AES.block_size))
+                        if current == None:
+                            current = bytestring
+                        else:
+                            previous = current
+                            current = bytestring
+                            nbytes = len(current)
+                            if nbytes == 0:
+                                padding_bytes = ord(previous[-1])
+                                previous = previous[:-padding_bytes]
+                                NOT_DONE = False
+                            ofile.write(previous)
+        except:
+            break
+
+if __name__=='__main__':
+    parser = argparse.ArgumentParser(description = 'encrypts / decrypts, in parallel, multiple files')
+    required = parser.add_argument_group('required arguments').add_mutually_exclusive_group(required = True)
+    required.add_argument('-e', action = 'store_true', help = 'encrypts files')
+    required.add_argument('-d', action = 'store_true', help = 'decrypts files')
+    parser.add_argument('-p', type = int, help = 'level of parallelization')
+    parser.add_argument('-v', action = 'store_true', help = "if one of the files doesn't exist, the command asks the user if he want's to continue. \
+                                                        in case the user doesn't want to continue, the command should finish the cipher of files that already \
+                                                        started without initiating the cipher of new files")
+    parser.add_argument('files', type = str, nargs='*', help = 'list of files to be treated')
+    options = parser.parse_args()
+
+if options.e:
+    eCypher = True
+    if options.files:
+        if options.p:
+            if options.v:
+                createP(options.files, cifrar, options.p, v = True)
+            else:
+                createP(options.files, cifrar, options.p)
+        else:
+            if options.v:
+                createP(options.files, cifrar, v = True)
+            else:
+                createP(options.files, cifrar)
+    else:
+        if options.p:
+            if options.v:
+                createP(filesStdin(), cifrar, options.p, v = True)
+            else:
+                createP(filesStdin(), cifrar, options.p)
+        else:
+            if options.v:
+                createP(filesStdin(), cifrar, v = True)
+            else:
+                createP(filesStdin(), cifrar)
+elif options.d:
+    dCypher = True
+    if options.files:
+        if options.p:
+            if options.v:
+                createP(options.files, decifrar, options.p, v = True)
+            else:
+                createP(options.files, decifrar, options.p)
+        else:
+            if options.v:
+                createP(options.files, decifrar, v = True)
+            else:
+                createP(options.files, decifrar)
+    else:
+        if options.p:
+            if options.v:
+                createP(filesStdin(), decifrar, options.p, v = True)
+            else:
+                createP(filesStdin(), decifrar, options.p)
+        else:
+            if options.v:
+                createP(filesStdin(), decifrar, v = True)
+            else:
+                createP(filesStdin(), decifrar)
+
+for p in process:
+    p.join()
+
+if eCypher:
+    print "Number of encrypted files:", total - (total - n.value)
+elif dCypher:
+    print "Number of decrypted files:", total - (total - n.value)
